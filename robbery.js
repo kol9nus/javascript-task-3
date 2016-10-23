@@ -83,7 +83,9 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
                 return false;
             }
 
-            while (lastAppropriate + afterNMillisec > appropriateMoments[this.lastIndex].from) {
+            while (
+                lastAppropriate.from + afterNMillisec > appropriateMoments[this.lastIndex].from
+                ) {
                 if (this.lastIndex + 1 === appropriateMoments.length) {
                     return false;
                 }
