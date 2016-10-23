@@ -8,6 +8,7 @@ exports.isStar = true;
 
 var timePattern = /^(?:([a-zа-я]{2}) )?(\d\d):(\d\d)\+(\d+)$/i;
 var dayByName = { undefined: 0, 'ВС': 1, 'ПН': 2, 'ВТ': 3, 'СР': 4, 'ЧТ': 5 };
+var nameByDay = [undefined, 'ВС', 'ПН', 'ВТ', 'СР', 'ЧТ'];
 
 var DEFAULT_YEAR = 1970;
 var DEFAULT_MONTH = 0;
@@ -37,6 +38,25 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
         return a.timestamp - b.timestamp;
     });
 
+    var appropriateMoments = [];
+    var isAlreadyOccurred = [false, true, true, true];
+    var lastFoundedElement = {};
+    timeLine.forEach(function (element) {
+        if (isAlreadyOccurred.every(isTrue)) {
+            if (element.timestamp - lastFoundedElement.timestamp >= duration * 60 * 1000) {
+                appropriateMoments.push(
+                    {
+                        from: lastFoundedElement.timestamp,
+                        to: element.timestamp
+                    }
+                );
+            }
+        }
+        isAlreadyOccurred[element.identifier] = !isAlreadyOccurred[element.identifier];
+        lastFoundedElement = element;
+    });
+    var i = 0;
+
     return {
 
         /**
@@ -44,7 +64,7 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
          * @returns {Boolean}
          */
         exists: function () {
-            return false;
+            return appropriateMoments.length > 0;
         },
 
         /**
@@ -55,7 +75,11 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
          * @returns {String}
          */
         format: function (template) {
-            return template;
+            if (!this.exists()) {
+                return '';
+            }
+
+            return timestampToTimeByTemplate(appropriateMoments[i].from, template);
         },
 
         /**
@@ -64,7 +88,28 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
          * @returns {Boolean}
          */
         tryLater: function () {
-            return false;
+            var afterNMillisec = 30 * 60000;
+            var durationMillisec = duration * 60000;
+            if (appropriateMoments[i].from + afterNMillisec + durationMillisec <=
+                appropriateMoments[i].to) {
+                appropriateMoments[i].from = appropriateMoments[i].from + afterNMillisec;
+
+                return true;
+            }
+
+            if (appropriateMoments.length - i <= 1) {
+                return false;
+            }
+
+            var lastAppropriate = appropriateMoments[i++];
+            while (lastAppropriate + afterNMillisec > appropriateMoments[i].from) {
+                if (i + 1 === appropriateMoments.length) {
+                    return false;
+                }
+                i++;
+            }
+
+            return true;
         }
     };
 };
@@ -126,4 +171,20 @@ function parseTime(time) {
         Number(parsedTime[2]) - Number(parsedTime[4]) + Number(bankTimeZone) + 24,
         Number(parsedTime[3])
     );
+}
+
+function isTrue(variable) {
+    return variable;
+}
+
+function timestampToTimeByTemplate(timestamp, template) {
+    var date = new Date(timestamp);
+    var temp = date.getUTCDate();
+    var day = nameByDay[temp].toString();
+    var hour = date.getUTCHours() < 10 ? '0' + date.getUTCHours() : date.getUTCHours().toString();
+    var minute = date.getMinutes() < 10 ? '0' + date.getMinutes() : date.getMinutes().toString();
+
+    return template.replace(/%HH/, hour)
+        .replace(/%MM/, minute)
+        .replace(/%DD/, day);
 }
