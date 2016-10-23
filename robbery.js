@@ -18,7 +18,7 @@ var bankTimeZone = 0;
 /**
  * Алгоритм получения подходящего времени следующий: сначала выстраиваем все времена участников и
  * банка во временной шкале с идентификатором того, чьё это время. После этого определяем
- * пересечение всех 4 множеств отрезков, получая множество подходящих для ограбления промежутков
+ * пересечения множеств отрезков, получая множество подходящих для ограбления промежутков
  * времени.
  * @param {Object} schedule – Расписание Банды
  * @param {Number} duration - Время на ограбление в минутах
@@ -30,41 +30,20 @@ var bankTimeZone = 0;
 exports.getAppropriateMoment = function (schedule, duration, workingHours) {
     bankTimeZone = timePattern.exec(workingHours.from)[4];
 
-    var timeLine = [];
-    addBankWorkingTimeToTimeLine(timeLine, workingHours);
-    addGangAppropriateTime(timeLine, schedule);
+    var timeLine = createTimeLine(schedule, workingHours);
 
-    timeLine.sort(function (a, b) {
-        return a.timestamp - b.timestamp;
-    });
-
-    var appropriateMoments = [];
-    var isAlreadyOccurred = [false, true, true, true];
-    var lastFoundedElement = {};
-    timeLine.forEach(function (element) {
-        if (isAlreadyOccurred.every(isTrue)) {
-            if (element.timestamp - lastFoundedElement.timestamp >= duration * 60 * 1000) {
-                appropriateMoments.push(
-                    {
-                        from: lastFoundedElement.timestamp,
-                        to: element.timestamp
-                    }
-                );
-            }
-        }
-        isAlreadyOccurred[element.identifier] = !isAlreadyOccurred[element.identifier];
-        lastFoundedElement = element;
-    });
-    var i = 0;
+    var appropriateMoments = defineAppropriateMoments(timeLine, duration);
 
     return {
+
+        lastIndex: 0,
 
         /**
          * Найдено ли время
          * @returns {Boolean}
          */
         exists: function () {
-            return appropriateMoments.length > 0;
+            return Boolean(appropriateMoments[this.lastIndex]);
         },
 
         /**
@@ -79,7 +58,7 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
                 return '';
             }
 
-            return timestampToTimeByTemplate(appropriateMoments[i].from, template);
+            return timestampToTimeByTemplate(appropriateMoments[this.lastIndex].from, template);
         },
 
         /**
@@ -88,25 +67,27 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
          * @returns {Boolean}
          */
         tryLater: function () {
+            if (this.lastIndex === appropriateMoments.length) {
+                return false;
+            }
+
             var afterNMillisec = 30 * 60000;
-            var durationMillisec = duration * 60000;
-            if (appropriateMoments[i].from + afterNMillisec + durationMillisec <=
-                appropriateMoments[i].to) {
-                appropriateMoments[i].from = appropriateMoments[i].from + afterNMillisec;
+            var lastAppropriate = appropriateMoments[this.lastIndex];
+            if (lastAppropriate.from + afterNMillisec + duration * 60000 <= lastAppropriate.to) {
+                appropriateMoments[this.lastIndex].from += afterNMillisec;
 
                 return true;
             }
 
-            if (appropriateMoments.length - i <= 1) {
+            if (appropriateMoments.length - this.lastIndex <= 1) {
                 return false;
             }
 
-            var lastAppropriate = appropriateMoments[i++];
-            while (lastAppropriate + afterNMillisec > appropriateMoments[i].from) {
-                if (i + 1 === appropriateMoments.length) {
+            while (lastAppropriate + afterNMillisec > appropriateMoments[this.lastIndex].from) {
+                if (this.lastIndex + 1 === appropriateMoments.length) {
                     return false;
                 }
-                i++;
+                this.lastIndex++;
             }
 
             return true;
@@ -173,10 +154,21 @@ function parseTime(time) {
     );
 }
 
+/**
+ * Глупая функция, просто возвращающая своё значение
+ * @param {Boolean} variable
+ * @returns {Boolean}
+ */
 function isTrue(variable) {
     return variable;
 }
 
+/**
+ * Формирует строку, шаблон которой задан template, из timestamp
+ * @param {Number} timestamp - время в миллисекундах
+ * @param {String} template - шаблон сообщения
+ * @returns {String} время начала удовлетворяющее шаблону template
+ */
 function timestampToTimeByTemplate(timestamp, template) {
     var date = new Date(timestamp);
     var temp = date.getUTCDate();
@@ -187,4 +179,50 @@ function timestampToTimeByTemplate(timestamp, template) {
     return template.replace(/%HH/, hour)
         .replace(/%MM/, minute)
         .replace(/%DD/, day);
+}
+
+/**
+ * Создание временной прямой со всеми точками на ней
+ * @param {Object} schedule
+ * @param {Object} workingHours
+ * @returns {Array}
+ */
+function createTimeLine(schedule, workingHours) {
+    var result = [];
+    addBankWorkingTimeToTimeLine(result, workingHours);
+    addGangAppropriateTime(result, schedule);
+
+    result.sort(function (a, b) {
+        return a.timestamp - b.timestamp;
+    });
+
+    return result;
+}
+
+/**
+ * Определение достаточных для ограбления отрезков времени
+ * @param {Array} timeLine - массив обхектов вида { timestamp, identifier }
+ * @param {Number} duration - Время необходимое для ограбления
+ * @returns {Array}
+ */
+function defineAppropriateMoments(timeLine, duration) {
+    var appropriateMoments = [];
+    var appearances = [false, true, true, true];
+    var lastFoundedElement = {};
+    timeLine.forEach(function (element) {
+        if (appearances.every(isTrue)) {
+            if (element.timestamp - lastFoundedElement.timestamp >= duration * 60 * 1000) {
+                appropriateMoments.push(
+                    {
+                        from: lastFoundedElement.timestamp,
+                        to: element.timestamp
+                    }
+                );
+            }
+        }
+        appearances[element.identifier] = !appearances[element.identifier];
+        lastFoundedElement = element;
+    });
+
+    return appropriateMoments;
 }
