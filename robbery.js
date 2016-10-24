@@ -7,11 +7,14 @@
 exports.isStar = true;
 
 var timePattern = /^(?:([a-zа-я]{2}) )?(\d\d):(\d\d)\+(\d+)$/i;
-var dayByName = { undefined: 0, 'ВС': 1, 'ПН': 2, 'ВТ': 3, 'СР': 4, 'ЧТ': 5 };
-var nameByDay = [undefined, 'ВС', 'ПН', 'ВТ', 'СР', 'ЧТ'];
+var dayByName = { 'ВС': 0, 'ПН': 1, 'ВТ': 2, 'СР': 3, 'ЧТ': 4 };
+var nameByDay = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ'];
 
 var DEFAULT_YEAR = 1970;
 var DEFAULT_MONTH = 0;
+
+var M_TO_MS_MULTIPLIER = 60 * 1000;
+var HALF_HOUR_MS = 30 * M_TO_MS_MULTIPLIER;
 
 var bankTimeZone = 0;
 
@@ -32,18 +35,17 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
 
     var timeLine = createTimeLine(schedule, workingHours);
 
-    var appropriateMoments = defineAppropriateMoments(timeLine, duration);
-
     return {
 
         lastIndex: 0,
+        appropriateMoments: defineAppropriateMoments(timeLine, duration),
 
         /**
          * Найдено ли время
          * @returns {Boolean}
          */
         exists: function () {
-            return Boolean(appropriateMoments[this.lastIndex]);
+            return Boolean(this.appropriateMoments[this.lastIndex]);
         },
 
         /**
@@ -58,7 +60,7 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
                 return '';
             }
 
-            return timestampToTimeByTemplate(appropriateMoments[this.lastIndex].from, template);
+            return formatTimestamp(template, this.appropriateMoments[this.lastIndex].from);
         },
 
         /**
@@ -67,35 +69,52 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
          * @returns {Boolean}
          */
         tryLater: function () {
-            if (this.lastIndex === appropriateMoments.length) {
-                return false;
-            }
+            var isItLastAppropriateTime = this.appropriateMoments.length - this.lastIndex <= 1;
 
-            var afterNMillisec = 30 * 60000;
-            var lastAppropriate = appropriateMoments[this.lastIndex];
-            if (lastAppropriate.from + afterNMillisec + duration * 60000 <= lastAppropriate.to) {
-                appropriateMoments[this.lastIndex].from += afterNMillisec;
-
-                return true;
-            }
-
-            if (appropriateMoments.length - this.lastIndex <= 1) {
-                return false;
-            }
-
-            while (
-                lastAppropriate.from + afterNMillisec > appropriateMoments[this.lastIndex].from
-                ) {
-                if (this.lastIndex + 1 === appropriateMoments.length) {
-                    return false;
-                }
-                this.lastIndex++;
-            }
-
-            return true;
+            return this.exists() && (
+                tryLaterInSamePeriod(this.appropriateMoments[this.lastIndex], duration) ||
+                !isItLastAppropriateTime &&
+                tryLaterInNextPeriods(this)
+                );
         }
     };
 };
+
+/**
+ * Попробовать позже в этот же период времени
+ * @param {Object} appropriateMoment - подходящий временной интервал для ограбления
+ * @param {Number} duration - необходимое кол-во минут для ограбления
+ * @returns {boolean}
+ */
+function tryLaterInSamePeriod(appropriateMoment, duration) {
+    var nextAppropriateTimeBeginning = appropriateMoment.from + HALF_HOUR_MS;
+    if (nextAppropriateTimeBeginning + duration * M_TO_MS_MULTIPLIER <= appropriateMoment.to) {
+        appropriateMoment.from += HALF_HOUR_MS;
+
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Попробовать позже, но в следующий подходящий период
+ * @param {Object} o - изменяемый объект
+ * @returns {boolean}
+ */
+function tryLaterInNextPeriods(o) {
+    var i = o.lastIndex;
+    var lastAppropriate = o.appropriateMoments[i++];
+    while (lastAppropriate.from + HALF_HOUR_MS > o.appropriateMoments[i].from) {
+        if (i + 1 === o.appropriateMoments.length) {
+            return false;
+        }
+        i++;
+    }
+    o.lastIndex = i;
+
+    return true;
+}
 
 /**
  * @param {Array} timeLine
@@ -103,8 +122,8 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
  */
 function addBankWorkingTimeToTimeLine(timeLine, workingHours) {
 
-    var keys = Object.keys(dayByName);
-    for (var i = 2; i < keys.length - 1; i++) {
+    var keys = ['ПН', 'ВТ', 'СР'];
+    for (var i = 0; i < keys.length; i++) {
         timeLine.push(
             {
                 timestamp: parseTime(keys[i] + ' ' + workingHours.from),
@@ -167,14 +186,14 @@ function isTrue(variable) {
 
 /**
  * Формирует строку, шаблон которой задан template, из timestamp
- * @param {Number} timestamp - время в миллисекундах
  * @param {String} template - шаблон сообщения
+ * @param {Number} timestamp - время в миллисекундах
  * @returns {String} время начала удовлетворяющее шаблону template
  */
-function timestampToTimeByTemplate(timestamp, template) {
+function formatTimestamp(template, timestamp) {
     var date = new Date(timestamp);
     var temp = date.getUTCDate();
-    var day = nameByDay[temp].toString();
+    var day = (nameByDay[temp]).toString();
     var hour = date.getUTCHours() < 10 ? '0' + date.getUTCHours() : date.getUTCHours().toString();
     var minute = date.getMinutes() < 10 ? '0' + date.getMinutes() : date.getMinutes().toString();
 
@@ -209,11 +228,13 @@ function createTimeLine(schedule, workingHours) {
  */
 function defineAppropriateMoments(timeLine, duration) {
     var appropriateMoments = [];
-    var appearances = [false, true, true, true];
+    // Доступность банка и участников для ограбления в это время
+    var availabilities = [false, true, true, true]; // 0 - bank, 1 - Danny, 2 - Rusty, 3 - Linus
     var lastFoundedElement = {};
     timeLine.forEach(function (element) {
-        if (appearances.every(isTrue)) {
-            if (element.timestamp - lastFoundedElement.timestamp >= duration * 60 * 1000) {
+        if (availabilities.every(isTrue)) {
+            var timeForRobbing = element.timestamp - lastFoundedElement.timestamp;
+            if (timeForRobbing >= duration * M_TO_MS_MULTIPLIER) {
                 appropriateMoments.push(
                     {
                         from: lastFoundedElement.timestamp,
@@ -222,7 +243,7 @@ function defineAppropriateMoments(timeLine, duration) {
                 );
             }
         }
-        appearances[element.identifier] = !appearances[element.identifier];
+        availabilities[element.identifier] = !availabilities[element.identifier];
         lastFoundedElement = element;
     });
 
