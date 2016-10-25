@@ -14,15 +14,16 @@ var DEFAULT_YEAR = 1970;
 var DEFAULT_MONTH = 0;
 
 var M_TO_MS_MULTIPLIER = 60 * 1000;
-var HALF_HOUR_MS = 30 * M_TO_MS_MULTIPLIER;
+var TRY_LATER_DELAY_MS = 30 * M_TO_MS_MULTIPLIER;
 
 var bankTimeZone = 0;
 
 /**
  * Алгоритм получения подходящего времени следующий: сначала выстраиваем все времена участников и
- * банка во временной шкале с идентификатором того, чьё это время. После этого определяем
- * пересечения множеств отрезков, получая множество подходящих для ограбления промежутков
- * времени.
+ * банка во временной шкале с идентификатором того, чьё это время. После этого идём по этой
+ * временной шкале и на каждом времени смотрим, если банк встретился нечётное кол-во раз,
+ * а участники чётное, то промежуток до следующего времени - это промежуток
+ * "когда все могут". Проверяем, достаточно ли он длинный по времени, если да, запоминаем его.
  * @param {Object} schedule – Расписание Банды
  * @param {Number} duration - Время на ограбление в минутах
  * @param {Object} workingHours – Время работы банка
@@ -33,19 +34,19 @@ var bankTimeZone = 0;
 exports.getAppropriateMoment = function (schedule, duration, workingHours) {
     bankTimeZone = timePattern.exec(workingHours.from)[4];
 
-    var timeLine = createTimeLine(schedule, workingHours);
+    var timeline = createTimeline(schedule, workingHours);
 
     return {
 
-        lastIndex: 0,
-        appropriateMoments: defineAppropriateMoments(timeLine, duration),
+        _lastIndex: 0,
+        _appropriatePeriods: defineAppropriatePeriods(timeline, duration),
 
         /**
          * Найдено ли время
          * @returns {Boolean}
          */
         exists: function () {
-            return Boolean(this.appropriateMoments[this.lastIndex]);
+            return Boolean(this._appropriatePeriods[this._lastIndex]);
         },
 
         /**
@@ -56,11 +57,9 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
          * @returns {String}
          */
         format: function (template) {
-            if (!this.exists()) {
-                return '';
-            }
-
-            return formatTimestamp(template, this.appropriateMoments[this.lastIndex].from);
+            return this.exists()
+                ? formatTimestamp(template, this._appropriatePeriods[this._lastIndex].from)
+                : '';
         },
 
         /**
@@ -69,89 +68,103 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
          * @returns {Boolean}
          */
         tryLater: function () {
-            var isItLastAppropriateTime = this.appropriateMoments.length - this.lastIndex <= 1;
+            return this.exists() && (this._tryLaterInSamePeriod() || this._tryLaterInNextPeriods());
+        },
 
-            return this.exists() && (
-                tryLaterInSamePeriod(this.appropriateMoments[this.lastIndex], duration) ||
-                !isItLastAppropriateTime &&
-                tryLaterInNextPeriods(this)
-                );
+        /**
+         * Попробовать позже в этот же период времени
+         * @returns {boolean}
+         */
+        _tryLaterInSamePeriod: function () {
+            var period = this._appropriatePeriods[this._lastIndex];
+            var newPeriodBeginning = period.from + TRY_LATER_DELAY_MS;
+            if (newPeriodBeginning + duration * M_TO_MS_MULTIPLIER <= period.to) {
+                period.from += TRY_LATER_DELAY_MS;
+
+                return true;
+            }
+
+            return false;
+        },
+
+        /**
+         * Попробовать позже, но в следующий подходящий период
+         * @returns {boolean}
+         */
+        _tryLaterInNextPeriods: function () {
+            // Есть ли ещё подходящие периоды
+            if (this._lastIndex + 1 >= this._appropriatePeriods.length) {
+                return false;
+            }
+
+            var lastAppropriate = this._appropriatePeriods[this._lastIndex];
+            var i = this._lastIndex + 1;
+            while (lastAppropriate.from + TRY_LATER_DELAY_MS > this._appropriatePeriods[i].from) {
+                i++;
+                if (i === this._appropriatePeriods.length) {
+                    return false;
+                }
+            }
+            this._lastIndex = i;
+
+            return true;
         }
     };
 };
 
 /**
- * Попробовать позже в этот же период времени
- * @param {Object} appropriateMoment - подходящий временной интервал для ограбления
- * @param {Number} duration - необходимое кол-во минут для ограбления
- * @returns {boolean}
+ * Создание временной прямой со всеми временами на ней
+ * @param {Object} schedule
+ * @param {Object} workingHours
+ * @returns {Array}
  */
-function tryLaterInSamePeriod(appropriateMoment, duration) {
-    var nextAppropriateTimeBeginning = appropriateMoment.from + HALF_HOUR_MS;
-    if (nextAppropriateTimeBeginning + duration * M_TO_MS_MULTIPLIER <= appropriateMoment.to) {
-        appropriateMoment.from += HALF_HOUR_MS;
+function createTimeline(schedule, workingHours) {
+    var timeline = [];
+    addBankWorkingTime(timeline, workingHours);
+    addGangAppropriateTime(timeline, schedule);
 
-        return true;
-    }
+    timeline.sort(function (a, b) {
+        return a.timestamp - b.timestamp;
+    });
 
-    return false;
+    return timeline;
 }
 
 /**
- * Попробовать позже, но в следующий подходящий период
- * @param {Object} o - изменяемый объект
- * @returns {boolean}
- */
-function tryLaterInNextPeriods(o) {
-    var i = o.lastIndex;
-    var lastAppropriate = o.appropriateMoments[i++];
-    while (lastAppropriate.from + HALF_HOUR_MS > o.appropriateMoments[i].from) {
-        if (i + 1 === o.appropriateMoments.length) {
-            return false;
-        }
-        i++;
-    }
-    o.lastIndex = i;
-
-    return true;
-}
-
-/**
- * @param {Array} timeLine
+ * @param {Array} timeline
  * @param {object} workingHours
  */
-function addBankWorkingTimeToTimeLine(timeLine, workingHours) {
+function addBankWorkingTime(timeline, workingHours) {
 
-    var keys = ['ПН', 'ВТ', 'СР'];
-    for (var i = 0; i < keys.length; i++) {
-        timeLine.push(
+    ['ПН', 'ВТ', 'СР'].forEach(function (day) {
+        timeline.push(
             {
-                timestamp: parseTime(keys[i] + ' ' + workingHours.from),
-                identifier: 0
+                timestamp: parseTime(day + ' ' + workingHours.from),
+                id: 0
             },
             {
-                timestamp: parseTime(keys[i] + ' ' + workingHours.to),
-                identifier: 0
+                timestamp: parseTime(day + ' ' + workingHours.to),
+                id: 0
             }
         );
-    }
+    });
 }
 
 /**
- * @param {Array} timeLine
+ * @param {Array} timeline
  * @param {object} schedule
  */
-function addGangAppropriateTime(timeLine, schedule) {
-    Object.keys(schedule).forEach(function (key, index) {
-        schedule[key].forEach(function (element) {
-            timeLine.push(
+function addGangAppropriateTime(timeline, schedule) {
+    Object.keys(schedule).forEach(function (person, personIndex) {
+        schedule[person].forEach(function (time) {
+            timeline.push(
                 {
-                    timestamp: parseTime(element.from),
-                    identifier: index + 1
+                    timestamp: parseTime(time.from),
+                    id: personIndex + 1
                 },
                 {
-                    timestamp: parseTime(element.to),
-                    identifier: index + 1
+                    timestamp: parseTime(time.to),
+                    id: personIndex + 1
                 }
             );
         });
@@ -159,7 +172,7 @@ function addGangAppropriateTime(timeLine, schedule) {
 }
 
 /**
- * @param {string} time
+ * @param {string} time - время формата DD HH:MM+Z(Z)
  * @returns {int} - timestamp
  */
 function parseTime(time) {
@@ -176,6 +189,34 @@ function parseTime(time) {
 }
 
 /**
+ * Определение достаточно длинных для ограбления отрезков времени
+ * @param {Array} timeline - массив обхектов вида { timestamp, id }
+ * @param {Number} duration - Время необходимое для ограбления
+ * @returns {Array}
+ */
+function defineAppropriatePeriods(timeline, duration) {
+    var periods = [];
+    // Доступность банка и участников для ограбления в это время
+    var availabilities = [false, true, true, true]; // 0 - bank, 1 - Danny, 2 - Rusty, 3 - Linus
+    var lastFoundedTime = {};
+    timeline.forEach(function (time) {
+        if (availabilities.every(isTrue)) {
+            var timeForRobbing = time.timestamp - lastFoundedTime.timestamp;
+            if (timeForRobbing >= duration * M_TO_MS_MULTIPLIER) {
+                periods.push({
+                    from: lastFoundedTime.timestamp,
+                    to: time.timestamp
+                });
+            }
+        }
+        availabilities[time.id] = !availabilities[time.id];
+        lastFoundedTime = time;
+    });
+
+    return periods;
+}
+
+/**
  * Глупая функция, просто возвращающая своё значение
  * @param {Boolean} variable
  * @returns {Boolean}
@@ -185,7 +226,7 @@ function isTrue(variable) {
 }
 
 /**
- * Формирует строку, шаблон которой задан template, из timestamp
+ * Формирует строку из timestamp, шаблон которой задан template
  * @param {String} template - шаблон сообщения
  * @param {Number} timestamp - время в миллисекундах
  * @returns {String} время начала удовлетворяющее шаблону template
@@ -193,9 +234,9 @@ function isTrue(variable) {
 function formatTimestamp(template, timestamp) {
     var date = new Date(timestamp);
     var temp = date.getUTCDate();
-    var day = (nameByDay[temp]).toString();
-    var hour = date.getUTCHours() < 10 ? '0' + date.getUTCHours() : date.getUTCHours().toString();
-    var minute = date.getMinutes() < 10 ? '0' + date.getMinutes() : date.getMinutes().toString();
+    var day = nameByDay[temp];
+    var hour = addLeadingZeroIfNecessary(date.getUTCHours());
+    var minute = addLeadingZeroIfNecessary(date.getMinutes());
 
     return template.replace(/%HH/, hour)
         .replace(/%MM/, minute)
@@ -203,49 +244,10 @@ function formatTimestamp(template, timestamp) {
 }
 
 /**
- * Создание временной прямой со всеми точками на ней
- * @param {Object} schedule
- * @param {Object} workingHours
- * @returns {Array}
+ * Добавляет ведущий ноль, если number < 10
+ * @param {Number} number
+ * @returns {String}
  */
-function createTimeLine(schedule, workingHours) {
-    var result = [];
-    addBankWorkingTimeToTimeLine(result, workingHours);
-    addGangAppropriateTime(result, schedule);
-
-    result.sort(function (a, b) {
-        return a.timestamp - b.timestamp;
-    });
-
-    return result;
-}
-
-/**
- * Определение достаточных для ограбления отрезков времени
- * @param {Array} timeLine - массив обхектов вида { timestamp, identifier }
- * @param {Number} duration - Время необходимое для ограбления
- * @returns {Array}
- */
-function defineAppropriateMoments(timeLine, duration) {
-    var appropriateMoments = [];
-    // Доступность банка и участников для ограбления в это время
-    var availabilities = [false, true, true, true]; // 0 - bank, 1 - Danny, 2 - Rusty, 3 - Linus
-    var lastFoundedElement = {};
-    timeLine.forEach(function (element) {
-        if (availabilities.every(isTrue)) {
-            var timeForRobbing = element.timestamp - lastFoundedElement.timestamp;
-            if (timeForRobbing >= duration * M_TO_MS_MULTIPLIER) {
-                appropriateMoments.push(
-                    {
-                        from: lastFoundedElement.timestamp,
-                        to: element.timestamp
-                    }
-                );
-            }
-        }
-        availabilities[element.identifier] = !availabilities[element.identifier];
-        lastFoundedElement = element;
-    });
-
-    return appropriateMoments;
+function addLeadingZeroIfNecessary(number) {
+    return number < 10 ? '0' + number : number.toString();
 }
