@@ -13,6 +13,8 @@ var nameByDay = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ'];
 var DEFAULT_YEAR = 1970;
 var DEFAULT_MONTH = 0;
 
+var BANK_WORKDAYS = ['ПН', 'ВТ', 'СР'];
+
 var M_TO_MS_MULTIPLIER = 60 * 1000;
 var TRY_LATER_DELAY_MS = 30 * M_TO_MS_MULTIPLIER;
 
@@ -93,12 +95,12 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
          */
         _tryLaterInNextPeriods: function () {
             // Есть ли ещё подходящие периоды
-            if (this._lastIndex + 1 >= this._appropriatePeriods.length) {
+            var i = this._lastIndex + 1;
+            if (i >= this._appropriatePeriods.length) {
                 return false;
             }
 
             var lastAppropriate = this._appropriatePeriods[this._lastIndex];
-            var i = this._lastIndex + 1;
             while (lastAppropriate.from + TRY_LATER_DELAY_MS > this._appropriatePeriods[i].from) {
                 i++;
                 if (i === this._appropriatePeriods.length) {
@@ -136,7 +138,7 @@ function createTimeline(schedule, workingHours) {
  */
 function addBankWorkingTime(timeline, workingHours) {
 
-    ['ПН', 'ВТ', 'СР'].forEach(function (day) {
+    BANK_WORKDAYS.forEach(function (day) {
         timeline.push(
             {
                 timestamp: parseTime(day + ' ' + workingHours.from),
