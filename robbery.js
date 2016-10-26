@@ -6,17 +6,17 @@
  */
 exports.isStar = true;
 
-var timePattern = /^(?:([a-zа-я]{2}) )?(\d\d):(\d\d)\+(\d+)$/i;
+var timePattern = /^(?:([а-я]{2})\s)?(\d{2}):(\d{2})\+(\d+)$/i;
 var dayByName = { 'ВС': 0, 'ПН': 1, 'ВТ': 2, 'СР': 3, 'ЧТ': 4 };
-var nameByDay = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ'];
+var nameByDay = Object.keys(dayByName);
 
 var DEFAULT_YEAR = 1970;
 var DEFAULT_MONTH = 0;
 
-var BANK_WORKDAYS = ['ПН', 'ВТ', 'СР'];
+var BANK_WORKDAYS = nameByDay.slice(1, 4);
 
-var M_TO_MS_MULTIPLIER = 60 * 1000;
-var TRY_LATER_DELAY_MS = 30 * M_TO_MS_MULTIPLIER;
+var MINUTE_MS = 60 * 1000;
+var TRY_LATER_DELAY_MS = 30 * MINUTE_MS;
 
 var bankTimeZone = 0;
 
@@ -80,7 +80,7 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
         _tryLaterInSamePeriod: function () {
             var period = this._appropriatePeriods[this._lastIndex];
             var newPeriodBeginning = period.from + TRY_LATER_DELAY_MS;
-            if (newPeriodBeginning + duration * M_TO_MS_MULTIPLIER <= period.to) {
+            if (newPeriodBeginning + duration * MINUTE_MS <= period.to) {
                 period.from += TRY_LATER_DELAY_MS;
 
                 return true;
@@ -123,7 +123,7 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
 function createTimeline(schedule, workingHours) {
     var timeline = [];
     addBankWorkingTime(timeline, workingHours);
-    addGangAppropriateTime(timeline, schedule);
+    addGangAppropriateTimes(timeline, schedule);
 
     timeline.sort(function (a, b) {
         return a.timestamp - b.timestamp;
@@ -139,16 +139,7 @@ function createTimeline(schedule, workingHours) {
 function addBankWorkingTime(timeline, workingHours) {
 
     BANK_WORKDAYS.forEach(function (day) {
-        timeline.push(
-            {
-                timestamp: parseTime(day + ' ' + workingHours.from),
-                id: 0
-            },
-            {
-                timestamp: parseTime(day + ' ' + workingHours.to),
-                id: 0
-            }
-        );
+        addPeriod(timeline, workingHours, 0, day);
     });
 }
 
@@ -156,34 +147,46 @@ function addBankWorkingTime(timeline, workingHours) {
  * @param {Array} timeline
  * @param {object} schedule
  */
-function addGangAppropriateTime(timeline, schedule) {
+function addGangAppropriateTimes(timeline, schedule) {
     Object.keys(schedule).forEach(function (person, personIndex) {
-        schedule[person].forEach(function (time) {
-            timeline.push(
-                {
-                    timestamp: parseTime(time.from),
-                    id: personIndex + 1
-                },
-                {
-                    timestamp: parseTime(time.to),
-                    id: personIndex + 1
-                }
-            );
+        schedule[person].forEach(function (period) {
+            addPeriod(timeline, period, personIndex + 1);
         });
     });
 }
 
 /**
- * @param {string} time - время формата DD HH:MM+Z(Z)
- * @returns {int} - timestamp
+ * Добавляет к timeline времена из period с идентификтором id на определённый день day
+ * @param {Array} timeline
+ * @param {Object} period
+ * @param {Number} id
+ * @param {String} [day] - день для добавления времени
  */
-function parseTime(time) {
+function addPeriod(timeline, period, id, day) {
+    timeline.push(
+        {
+            timestamp: dateToTimestamp(period.from, day),
+            id: id
+        },
+        {
+            timestamp: dateToTimestamp(period.to, day),
+            id: id
+        }
+    );
+}
+
+/**
+ * @param {string} time - время формата (DD )HH:MM+Z(Z)
+ * @param {string} [day] - день, если формат time HH:MM+Z(Z)
+ * @returns {Number} - timestamp
+ */
+function dateToTimestamp(time, day) {
     var parsedTime = timePattern.exec(time);
 
     return Date.UTC(
         DEFAULT_YEAR,
         DEFAULT_MONTH,
-        Number(dayByName[parsedTime[1]]) - 1,
+        Number(dayByName[(day !== undefined ? day : parsedTime[1])] - 1),
         // Приводим к одной временной зоне (банковской); +24 чтобы не было отриц. часов
         Number(parsedTime[2]) - Number(parsedTime[4]) + Number(bankTimeZone) + 24,
         Number(parsedTime[3])
@@ -202,9 +205,9 @@ function defineAppropriatePeriods(timeline, duration) {
     var availabilities = [false, true, true, true]; // 0 - bank, 1 - Danny, 2 - Rusty, 3 - Linus
     var lastFoundedTime = {};
     timeline.forEach(function (time) {
-        if (availabilities.every(isTrue)) {
+        if (availabilities.every(Boolean)) {
             var timeForRobbing = time.timestamp - lastFoundedTime.timestamp;
-            if (timeForRobbing >= duration * M_TO_MS_MULTIPLIER) {
+            if (timeForRobbing >= duration * MINUTE_MS) {
                 periods.push({
                     from: lastFoundedTime.timestamp,
                     to: time.timestamp
@@ -216,15 +219,6 @@ function defineAppropriatePeriods(timeline, duration) {
     });
 
     return periods;
-}
-
-/**
- * Глупая функция, просто возвращающая своё значение
- * @param {Boolean} variable
- * @returns {Boolean}
- */
-function isTrue(variable) {
-    return variable;
 }
 
 /**
