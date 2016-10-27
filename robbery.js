@@ -70,14 +70,15 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
          * @returns {Boolean}
          */
         tryLater: function () {
-            return this.exists() && (this._tryLaterInSamePeriod() || this._tryLaterInNextPeriods());
+            return this.exists() &&
+                (this._canRobLaterInSamePeriod() || this._canRobLaterInNextPeriods());
         },
 
         /**
          * Попробовать позже в этот же период времени
          * @returns {boolean}
          */
-        _tryLaterInSamePeriod: function () {
+        _canRobLaterInSamePeriod: function () {
             var period = this._appropriatePeriods[this._lastIndex];
             var newPeriodBeginning = period.from + TRY_LATER_DELAY_MS;
             if (newPeriodBeginning + duration * MINUTE_MS <= period.to) {
@@ -93,7 +94,7 @@ exports.getAppropriateMoment = function (schedule, duration, workingHours) {
          * Попробовать позже, но в следующий подходящий период
          * @returns {boolean}
          */
-        _tryLaterInNextPeriods: function () {
+        _canRobLaterInNextPeriods: function () {
             // Есть ли ещё подходящие периоды
             var i = this._lastIndex + 1;
             if (i >= this._appropriatePeriods.length) {
@@ -195,6 +196,9 @@ function dateToTimestamp(time, day) {
 
 /**
  * Определение достаточно длинных для ограбления отрезков времени
+ * Используется маска unavailabilities, где бит установлен, если участник недоступен.
+ * Соответственно равенство unavailabilities === 0 означает, что в это время можно провернуть
+ * ограбление
  * @param {Array} timeline - массив обхектов вида { timestamp, id }
  * @param {Number} duration - Время необходимое для ограбления
  * @returns {Array}
@@ -202,20 +206,18 @@ function dateToTimestamp(time, day) {
 function defineAppropriatePeriods(timeline, duration) {
     var periods = [];
     // Доступность банка и участников для ограбления в это время
-    var availabilities = [false, true, true, true]; // 0 - bank, 1 - Danny, 2 - Rusty, 3 - Linus
-    var lastFoundedTime = {};
+    var unavailabilities = 1; // 1 (младший) бит - банк, 2 - Danny, 3 - Rusty, 4 - Linus
+    var lastFoundTime = {};
+    var durationMS = duration * MINUTE_MS;
     timeline.forEach(function (time) {
-        if (availabilities.every(Boolean)) {
-            var timeForRobbing = time.timestamp - lastFoundedTime.timestamp;
-            if (timeForRobbing >= duration * MINUTE_MS) {
-                periods.push({
-                    from: lastFoundedTime.timestamp,
-                    to: time.timestamp
-                });
-            }
+        if (!unavailabilities && (time.timestamp - lastFoundTime.timestamp >= durationMS)) {
+            periods.push({
+                from: lastFoundTime.timestamp,
+                to: time.timestamp
+            });
         }
-        availabilities[time.id] = !availabilities[time.id];
-        lastFoundedTime = time;
+        unavailabilities ^= 1 << time.id;  // eslint-disable-line
+        lastFoundTime = time;
     });
 
     return periods;
@@ -229,8 +231,7 @@ function defineAppropriatePeriods(timeline, duration) {
  */
 function formatTimestamp(template, timestamp) {
     var date = new Date(timestamp);
-    var temp = date.getUTCDate();
-    var day = nameByDay[temp];
+    var day = nameByDay[date.getUTCDate()];
     var hour = addLeadingZeroIfNecessary(date.getUTCHours());
     var minute = addLeadingZeroIfNecessary(date.getMinutes());
 
@@ -245,5 +246,5 @@ function formatTimestamp(template, timestamp) {
  * @returns {String}
  */
 function addLeadingZeroIfNecessary(number) {
-    return number < 10 ? '0' + number : number.toString();
+    return ('0' + number).slice(-2);
 }
